@@ -1,3 +1,5 @@
-[build]
-  command = "npm install && npx vite build"
 
+[build]
+  base = "frontend"
+  command = "npm install && node node_modules/.bin/vite build"
+  publish = "frontend/dist"
