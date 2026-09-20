@@ -1,6 +1,6 @@
 [build]
   base = "frontend"
-  command = "npm install && npm run build"
+  command = "npm install && chmod -R +x node_modules/.bin && npm run build"
   publish = "dist"
 
 [build.environment]
