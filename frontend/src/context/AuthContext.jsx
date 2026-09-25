@@ -15,6 +15,43 @@ const saveMockUser = (mockUser) => {
   localStorage.setItem('anipini_mock_user', JSON.stringify(mockUser));
 };
 
+const getProfilePreferences = (userId) => {
+  try {
+    const saved = localStorage.getItem(`anipini_profile_${userId}`);
+    return saved ? JSON.parse(saved) : null;
+  } catch (error) {
+    console.warn('Profil tercihleri okunamadı:', error);
+    return null;
+  }
+};
+
+const saveProfilePreferences = (userId, preferences) => {
+  try {
+    localStorage.setItem(`anipini_profile_${userId}`, JSON.stringify(preferences));
+  } catch (error) {
+    console.warn('Profil tercihleri kaydedilemedi:', error);
+  }
+};
+
+const applyProfilePreferences = (user) => {
+  if (!user?.id || user.userType === 'corporate') return user;
+
+  let preferences = getProfilePreferences(user.id);
+  if (!preferences) {
+    preferences = {
+      fullName: 'Gezgin01',
+      avatarUrl: null
+    };
+    saveProfilePreferences(user.id, preferences);
+  } else if (/^Gezgin \d{4}$/.test(preferences.fullName || '')) {
+    preferences = { ...preferences, fullName: 'Gezgin01' };
+  }
+  preferences = { ...preferences, avatarUrl: null };
+  saveProfilePreferences(user.id, preferences);
+
+  return { ...user, ...preferences, avatarUrl: null };
+};
+
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(localStorage.getItem('anipini_token') || null);
@@ -32,7 +69,7 @@ export const AuthProvider = ({ children }) => {
         const response = await api.get('/auth/me');
         if (response.data.success) {
           localStorage.removeItem('anipini_demo_mode');
-          setUser(response.data.user);
+          setUser(applyProfilePreferences(response.data.user));
         }
       } catch (error) {
         localStorage.setItem('anipini_demo_mode', 'true');
@@ -40,7 +77,9 @@ export const AuthProvider = ({ children }) => {
         const savedMockUser = localStorage.getItem('anipini_mock_user');
         if (token === 'mock_jwt_token_pastel' && savedMockUser) {
           try {
-            setUser(JSON.parse(savedMockUser));
+            const profileUser = applyProfilePreferences(JSON.parse(savedMockUser));
+            setUser(profileUser);
+            saveMockUser(profileUser);
             return;
           } catch (parseError) {
             console.warn('Demo kullanıcı bilgisi okunamadı, yeniden oluşturuluyor:', parseError);
@@ -58,10 +97,11 @@ export const AuthProvider = ({ children }) => {
           bio: savedType === 'corporate' 
             ? 'Mekanımızın anılarını haritada paylaşıyoruz 🏢✨'
             : 'Haritamda tatlı anılar ve geziler biriktiriyorum 🌸✨',
-          avatarUrl: 'https://api.dicebear.com/7.x/bottts-neutral/svg?seed=Damla'
+          avatarUrl: null
         };
-        setUser(mockUser);
-        if (token === 'mock_jwt_token_pastel') saveMockUser(mockUser);
+        const profileUser = applyProfilePreferences(mockUser);
+        setUser(profileUser);
+        if (token === 'mock_jwt_token_pastel') saveMockUser(profileUser);
       } finally {
         setLoading(false);
       }
@@ -78,7 +118,7 @@ export const AuthProvider = ({ children }) => {
         localStorage.setItem('anipini_token', res.data.token);
         localStorage.setItem('anipini_usertype', res.data.user.userType || 'individual');
         setToken(res.data.token);
-        setUser(res.data.user);
+        setUser(applyProfilePreferences(res.data.user));
         return { success: true };
       }
     } catch (error) {
@@ -95,14 +135,17 @@ export const AuthProvider = ({ children }) => {
         bio: savedType === 'corporate'
           ? 'Mekanımızın unutulmaz anılarını paylaşıyoruz 🏢✨'
           : 'Haritamda tatlı anılar biriktiriyorum 🌸',
-        avatarUrl: `https://api.dicebear.com/7.x/bottts-neutral/svg?seed=${email}`
+        avatarUrl: savedType === 'corporate'
+          ? `https://api.dicebear.com/7.x/bottts-neutral/svg?seed=${email}`
+          : null
       };
       const mockToken = 'mock_jwt_token_pastel';
       localStorage.setItem('anipini_demo_mode', 'true');
       localStorage.setItem('anipini_token', mockToken);
       setToken(mockToken);
-      setUser(mockUser);
-      saveMockUser(mockUser);
+      const profileUser = applyProfilePreferences(mockUser);
+      setUser(profileUser);
+      saveMockUser(profileUser);
       return { success: true, isMock: true };
     }
   };
@@ -115,7 +158,7 @@ export const AuthProvider = ({ children }) => {
         localStorage.setItem('anipini_token', res.data.token);
         localStorage.setItem('anipini_usertype', res.data.user.userType || userType);
         setToken(res.data.token);
-        setUser(res.data.user);
+        setUser(applyProfilePreferences(res.data.user));
         return { success: true };
       }
     } catch (error) {
@@ -131,15 +174,18 @@ export const AuthProvider = ({ children }) => {
         bio: userType === 'corporate' 
           ? 'Mekanımızın unutulmaz anılarını saklamaya başladık! 🏢✨' 
           : 'AnıPini topluluğuna hoş geldin! 🌸',
-        avatarUrl: `https://api.dicebear.com/7.x/bottts-neutral/svg?seed=${encodeURIComponent(fullName)}`
+        avatarUrl: userType === 'corporate'
+          ? `https://api.dicebear.com/7.x/bottts-neutral/svg?seed=${encodeURIComponent(fullName)}`
+          : null
       };
       const mockToken = 'mock_jwt_token_pastel';
       localStorage.setItem('anipini_demo_mode', 'true');
       localStorage.setItem('anipini_token', mockToken);
       localStorage.setItem('anipini_usertype', userType);
       setToken(mockToken);
-      setUser(mockUser);
-      saveMockUser(mockUser);
+      const profileUser = applyProfilePreferences(mockUser);
+      setUser(profileUser);
+      saveMockUser(profileUser);
       return { success: true, isMock: true };
     }
   };

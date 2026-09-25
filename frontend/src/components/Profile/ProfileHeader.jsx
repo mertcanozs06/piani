@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Edit2, Check, MapPin, Building2, Users, UserPlus, UserCheck, Clock, ArrowLeft, Shield } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Edit2, Check, MapPin, Building2, Users, UserPlus, UserCheck, Clock, ArrowLeft, Shield, Camera, X } from 'lucide-react';
 
 const ProfileHeader = ({
   user,
@@ -7,6 +7,7 @@ const ProfileHeader = ({
   pinCount,
   stats = {},
   onUpdateBio,
+  onUpdateProfile,
   onBackToMyProfile,
   followStatus,
   onToggleFollow
@@ -15,9 +16,63 @@ const ProfileHeader = ({
   const targetUser = viewedUser || user;
 
   const [isEditing, setIsEditing] = useState(false);
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [isEditingEmail, setIsEditingEmail] = useState(false);
+  const [nameText, setNameText] = useState(targetUser?.fullName || '');
+  const [emailText, setEmailText] = useState(targetUser?.email || '');
   const [bioText, setBioText] = useState(targetUser?.bio || 'Haritamda tatlı anılar biriktiriyorum 🌸');
+  const fileInputRef = useRef(null);
 
   const isCorporate = targetUser?.userType === 'corporate';
+
+  useEffect(() => {
+    setNameText(targetUser?.fullName || '');
+  }, [targetUser?.fullName]);
+
+  useEffect(() => {
+    setEmailText(targetUser?.email || '');
+  }, [targetUser?.email]);
+
+  const handlePhotoChange = (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      alert('Lütfen bir fotoğraf dosyası seçin.');
+      return;
+    }
+    if (file.size > 3 * 1024 * 1024) {
+      alert('Profil fotoğrafı en fazla 3 MB olabilir.');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') onUpdateProfile?.({ avatarUrl: reader.result });
+    };
+    reader.onerror = () => alert('Fotoğraf dosyası okunamadı.');
+    reader.readAsDataURL(file);
+  };
+
+  const handleSaveName = async () => {
+    const fullName = nameText.trim();
+    if (!fullName) {
+      alert('Profil adı boş bırakılamaz.');
+      return;
+    }
+    const saved = await onUpdateProfile?.({ fullName });
+    if (saved !== false) setIsEditingName(false);
+  };
+
+  const handleSaveEmail = async () => {
+    const email = emailText.trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      alert('Geçerli bir e-posta adresi girin.');
+      return;
+    }
+    const saved = await onUpdateProfile?.({ email });
+    if (saved !== false) setIsEditingEmail(false);
+  };
 
   const handleSaveBio = () => {
     if (onUpdateBio) {
@@ -56,12 +111,37 @@ const ProfileHeader = ({
               ? 'from-purple-400 via-indigo-300 to-sky-300 ring-4 ring-purple-200 shadow-lg' 
               : 'from-pastel-rose via-pastel-peach to-pastel-sky shadow-pastel-soft'
           }`}>
-            <img 
-              src={targetUser?.avatarUrl || 'https://api.dicebear.com/7.x/bottts-neutral/svg?seed=User'} 
-              alt={targetUser?.fullName} 
-              className="w-full h-full rounded-full object-cover bg-white p-1"
-            />
+            {targetUser?.avatarUrl ? (
+              <img
+                src={targetUser.avatarUrl}
+                alt={targetUser?.fullName}
+                className="w-full h-full rounded-full object-cover bg-white p-1"
+              />
+            ) : (
+              <div className="w-full h-full rounded-full bg-white flex items-center justify-center text-pastel-gray">
+                <Camera className="w-8 h-8" />
+              </div>
+            )}
           </div>
+          {!isViewingOther && !isCorporate && (
+            <>
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                aria-label="Profil fotoğrafı seç"
+                className="absolute bottom-0 left-0 p-2 rounded-full bg-pastel-dark text-white shadow-md hover:bg-pastel-roseHover"
+              >
+                <Camera className="w-4 h-4" />
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={handlePhotoChange}
+              />
+            </>
+          )}
           
           {/* Rozet İkonu: Kurumsal hesaplarda Mekan İkonu, Bireyselde Çiçek */}
           <span className={`absolute bottom-1 right-1 text-xs p-1.5 rounded-full shadow-md border ${
@@ -76,7 +156,32 @@ const ProfileHeader = ({
           <div className="flex flex-col sm:flex-row items-center justify-between gap-2">
             <div>
               <div className="flex items-center justify-center sm:justify-start space-x-2">
-                <h2 className="font-serif text-2xl sm:text-3xl font-bold text-pastel-dark">{targetUser?.fullName || 'Gezgin Anısever'}</h2>
+                {!isViewingOther && !isCorporate && isEditingName ? (
+                  <div className="flex items-center gap-1">
+                    <input
+                      value={nameText}
+                      onChange={(event) => setNameText(event.target.value)}
+                      aria-label="Profil adı"
+                      maxLength={100}
+                      className="w-40 px-2 py-1 rounded-lg border border-pastel-rose/40 text-lg font-bold text-pastel-dark focus:outline-none focus:ring-2 focus:ring-pastel-rose"
+                    />
+                    <button onClick={handleSaveName} aria-label="Profil adını kaydet" className="p-1.5 text-emerald-600">
+                      <Check className="w-4 h-4" />
+                    </button>
+                    <button onClick={() => { setNameText(targetUser?.fullName || ''); setIsEditingName(false); }} aria-label="Düzenlemeyi iptal et" className="p-1.5 text-pastel-gray">
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-center sm:justify-start gap-2">
+                    <h2 className="font-serif text-2xl sm:text-3xl font-bold text-pastel-dark">{targetUser?.fullName || 'Gezgin Anısever'}</h2>
+                    {!isViewingOther && !isCorporate && (
+                      <button onClick={() => setIsEditingName(true)} aria-label="Profil adını düzenle" className="text-pastel-gray hover:text-pastel-dark">
+                        <Edit2 className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                )}
                 
                 {/* KURUMSAL HESAP İKONU & ROZETİ */}
                 {isCorporate && (
@@ -86,7 +191,33 @@ const ProfileHeader = ({
                   </span>
                 )}
               </div>
-              <p className="text-xs text-pastel-gray mt-0.5">{targetUser?.email}</p>
+              {!isViewingOther && !isCorporate && isEditingEmail ? (
+                <div className="flex items-center gap-1 mt-1">
+                  <input
+                    type="email"
+                    value={emailText}
+                    onChange={(event) => setEmailText(event.target.value)}
+                    aria-label="E-posta adresi"
+                    maxLength={100}
+                    className="w-56 px-2 py-1 rounded-lg border border-pastel-rose/40 text-xs text-pastel-dark focus:outline-none focus:ring-2 focus:ring-pastel-rose"
+                  />
+                  <button onClick={handleSaveEmail} aria-label="E-posta adresini kaydet" className="p-1.5 text-emerald-600">
+                    <Check className="w-4 h-4" />
+                  </button>
+                  <button onClick={() => { setEmailText(targetUser?.email || ''); setIsEditingEmail(false); }} aria-label="E-posta düzenlemesini iptal et" className="p-1.5 text-pastel-gray">
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-1 mt-0.5">
+                  <p className="text-xs text-pastel-gray">{targetUser?.email}</p>
+                  {!isViewingOther && !isCorporate && (
+                    <button onClick={() => setIsEditingEmail(true)} aria-label="E-posta adresini düzenle" className="text-pastel-gray hover:text-pastel-dark">
+                      <Edit2 className="w-3 h-3" />
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* BAŞKA HESAP VEYA KENDİ PROFİLİ BUTONU */}

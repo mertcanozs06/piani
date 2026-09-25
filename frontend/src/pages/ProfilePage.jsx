@@ -145,6 +145,38 @@ const ProfilePage = ({ viewedUser, onBackToMyProfile }) => {
     setUser(prev => ({ ...prev, bio: newBio }));
   };
 
+  const handleUpdateProfile = async (changes) => {
+    const updatedUser = { ...user, ...changes };
+    if (!isDemoMode()) {
+      try {
+        await api.put('/users/profile', changes);
+      } catch (err) {
+        alert(err.response?.data?.message || 'Profil bilgisi sunucuya kaydedilemedi.');
+        return false;
+      }
+    }
+
+    if (user?.id) {
+      try {
+        localStorage.setItem(
+          `anipini_profile_${user.id}`,
+          JSON.stringify({
+            fullName: updatedUser.fullName,
+            avatarUrl: updatedUser.avatarUrl || null,
+            email: updatedUser.email
+          })
+        );
+      } catch (error) {
+        console.warn('Profil değişiklikleri kaydedilemedi:', error);
+        alert('Profil değişikliği bu cihazda kaydedilemedi.');
+        return;
+      }
+    }
+
+    setUser(updatedUser);
+    return true;
+  };
+
   const handleDeletePin = async (memoryId) => {
     if (!window.confirm('Bu anı silinecektir, emin misiniz? 🌸')) return;
     if (isDemoMode() && user?.id) {
@@ -179,6 +211,7 @@ const ProfilePage = ({ viewedUser, onBackToMyProfile }) => {
         pinCount={userPins.length}
         stats={profileStats}
         onUpdateBio={handleUpdateBio}
+        onUpdateProfile={handleUpdateProfile}
         onBackToMyProfile={onBackToMyProfile}
         followStatus={followStatus}
         onToggleFollow={handleToggleFollow}

@@ -165,19 +165,29 @@ const getUserProfile = async (req, res, next) => {
 const updateProfile = async (req, res, next) => {
   try {
     const userId = req.user.id;
-    const { bio, fullName, avatarUrl } = req.body;
+    const { bio, fullName, avatarUrl, email } = req.body;
     const pool = getPool();
+    let normalizedEmail = null;
+    if (email !== undefined) {
+      normalizedEmail = String(email).trim().toLowerCase();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+        return res.status(400).json({ success: false, message: 'Geçerli bir e-posta adresi girin.' });
+      }
+    }
 
-    await pool.request()
+    const request = pool.request()
       .input('Id', sql.Int, userId)
-      .input('Bio', sql.NVarChar, bio || '')
+      .input('Bio', sql.NVarChar, bio)
       .input('FullName', sql.NVarChar, fullName)
       .input('AvatarUrl', sql.NVarChar, avatarUrl || null)
-      .query(`
+      .input('Email', sql.NVarChar(100), normalizedEmail);
+
+    await request.query(`
         UPDATE Users 
         SET Bio = COALESCE(@Bio, Bio),
             FullName = COALESCE(@FullName, FullName),
-            AvatarUrl = COALESCE(@AvatarUrl, AvatarUrl)
+            AvatarUrl = COALESCE(@AvatarUrl, AvatarUrl),
+            Email = COALESCE(@Email, Email)
         WHERE Id = @Id
       `);
 

@@ -8,6 +8,7 @@ const {
   deleteMemory,
   toggleLikeMemory,
   addComment,
+  deleteComment,
   toggleLikeComment,
   toggleRepostMemory,
   getTopSponsoredPins,
@@ -26,6 +27,7 @@ router.post('/:id/memories', protect, addMemoryToPin);
 router.delete('/memories/:id', protect, deleteMemory);
 router.post('/memories/:id/like', protect, toggleLikeMemory);
 router.post('/memories/:id/comments', protect, addComment);
+router.delete('/memories/comments/:commentId', protect, deleteComment);
 router.post('/memories/comments/:commentId/like', protect, toggleLikeComment);
 router.post('/memories/:id/repost', protect, toggleRepostMemory);
 

@@ -455,6 +455,51 @@ const addComment = async (req, res, next) => {
   }
 };
 
+// @desc   Kullanıcının kendi yorumunu sil
+// @route  DELETE /api/pins/memories/comments/:commentId
+const deleteComment = async (req, res, next) => {
+  const transaction = new sql.Transaction(getPool());
+  try {
+    await transaction.begin();
+    const request = new sql.Request(transaction);
+    const ownership = await request
+      .input('CommentId', sql.Int, req.params.commentId)
+      .input('UserId', sql.Int, req.user.id)
+      .query(`
+        SELECT comment.Id, comment.ParentCommentId
+        FROM MemoryComments comment
+        INNER JOIN Users [user] ON [user].Id = comment.UserId
+        WHERE comment.Id = @CommentId
+          AND comment.UserId = @UserId
+          AND [user].UserType = 'individual'
+      `);
+
+    if (ownership.recordset.length === 0) {
+      await transaction.rollback();
+      return res.status(404).json({ success: false, message: 'Yorum bulunamadı veya size ait değil.' });
+    }
+
+    await request
+      .input('ParentCommentId', sql.Int, ownership.recordset[0].ParentCommentId)
+      .query(`
+        UPDATE MemoryComments
+        SET ParentCommentId = @ParentCommentId
+        WHERE ParentCommentId = @CommentId;
+
+        DELETE FROM MemoryComments WHERE Id = @CommentId;
+      `);
+    await transaction.commit();
+    return res.json({ success: true, message: 'Yorum silindi.' });
+  } catch (error) {
+    try {
+      await transaction.rollback();
+    } catch (rollbackError) {
+      console.warn('Yorum silme işlemi geri alınamadı:', rollbackError);
+    }
+    next(error);
+  }
+};
+
 // @desc   Yorumu Beğen / Beğeniyi Kaldır
 // @route  POST /api/memories/comments/:commentId/like
 const toggleLikeComment = async (req, res, next) => {
@@ -636,6 +681,7 @@ module.exports = {
   deleteMemory,
   toggleLikeMemory,
   addComment,
+  deleteComment,
   toggleLikeComment,
   toggleRepostMemory,
   getTopSponsoredPins,

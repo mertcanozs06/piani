@@ -5,10 +5,24 @@ import api, { MOCK_FOLLOWERS } from '../../services/api';
 import { isDemoMode, readDemoComments, writeDemoComments } from '../../services/demoStorage';
 
 const updateCommentTree = (comments, commentId, update) => comments.map((comment) => (
-  comment.id === commentId
+  String(comment.id) === String(commentId)
     ? update(comment)
     : { ...comment, replies: updateCommentTree(comment.replies || [], commentId, update) }
 ));
+
+const removeCommentFromTree = (comments, commentId, parentCommentId = null) => comments
+  .flatMap(comment => {
+    if (String(comment.id) === String(commentId)) {
+      return (comment.replies || []).map(reply => ({
+        ...reply,
+        parentCommentId: comment.parentCommentId ?? parentCommentId
+      }));
+    }
+    return [{
+      ...comment,
+      replies: removeCommentFromTree(comment.replies || [], commentId, comment.id)
+    }];
+  });
 
 const countComments = (comments = []) => comments.reduce(
   (total, comment) => total + 1 + countComments(comment.replies || []),
@@ -440,6 +454,44 @@ const PinDetailModal = ({ pin, onClose, onDeleteMemory, onAddMemoryToPin }) => {
     }
   };
 
+  const handleDeleteComment = async (memoryId, commentId) => {
+    const memory = localMemories.find(item => String(item.id) === String(memoryId));
+    const originalComments = memory?.comments || [];
+    let targetComment = null;
+    const findComment = (comments = []) => {
+      for (const comment of comments) {
+        if (String(comment.id) === String(commentId)) return comment;
+        const nested = findComment(comment.replies || []);
+        if (nested) return nested;
+      }
+      return null;
+    };
+    targetComment = findComment(originalComments);
+    if (!targetComment || String(targetComment.user?.id) !== String(user?.id)) return;
+    if (!window.confirm('Bu yorumu silmek istediğinize emin misiniz?')) return;
+
+    const updatedComments = removeCommentFromTree(originalComments, commentId);
+    setLocalMemories(prev => prev.map(item => String(item.id) === String(memoryId)
+      ? { ...item, comments: updatedComments }
+      : item
+    ));
+
+    if (isDemoMode() && user?.id) {
+      writeDemoComments(user.id, memoryId, updatedComments);
+      return;
+    }
+
+    try {
+      await api.delete(`/pins/memories/comments/${commentId}`);
+    } catch (error) {
+      setLocalMemories(prev => prev.map(item => String(item.id) === String(memoryId)
+        ? { ...item, comments: originalComments }
+        : item
+      ));
+      alert(error.response?.data?.message || 'Yorum silinemedi.');
+    }
+  };
+
   // Yorum Yanıtlama (Alt Yorum Gönderme)
   const handleAddReply = async (memoryId, parentCommentId) => {
     const text = replyInputs[parentCommentId];
@@ -616,6 +668,15 @@ const PinDetailModal = ({ pin, onClose, onDeleteMemory, onAddMemoryToPin }) => {
             <CornerDownRight className="w-3 h-3" />
             <span>Yanıtla</span>
           </button>
+          {user?.userType === 'individual' && String(comment.user?.id) === String(user?.id) && (
+            <button
+              onClick={() => handleDeleteComment(memoryId, comment.id)}
+              className="font-bold text-red-500 hover:text-red-700 hover:underline flex items-center space-x-1"
+            >
+              <Trash2 className="w-3 h-3" />
+              <span>Sil</span>
+            </button>
+          )}
         </div>
       </div>
 
