@@ -20,7 +20,7 @@ router.get('/', getAllPins);
 router.get('/categories', getCategories);
 router.get('/sponsored', getTopSponsoredPins);
 router.post('/sponsored', protect, submitSponsorshipBid);
-router.get('/:id', getPinDetails);
+router.get('/:id', protect, getPinDetails);
 router.post('/', protect, createPinWithMemory);
 router.post('/:id/memories', protect, addMemoryToPin);
 router.delete('/memories/:id', protect, deleteMemory);

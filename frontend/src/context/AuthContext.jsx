@@ -3,6 +3,18 @@ import api from '../services/api';
 
 const AuthContext = createContext();
 
+const getMockUserId = (email) => {
+  let hash = 0;
+  for (const character of email.trim().toLowerCase()) {
+    hash = (hash * 31 + character.charCodeAt(0)) % 1000000000;
+  }
+  return hash || 1;
+};
+
+const saveMockUser = (mockUser) => {
+  localStorage.setItem('anipini_mock_user', JSON.stringify(mockUser));
+};
+
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(localStorage.getItem('anipini_token') || null);
@@ -19,14 +31,24 @@ export const AuthProvider = ({ children }) => {
       try {
         const response = await api.get('/auth/me');
         if (response.data.success) {
+          localStorage.removeItem('anipini_demo_mode');
           setUser(response.data.user);
         }
       } catch (error) {
+        localStorage.setItem('anipini_demo_mode', 'true');
         console.warn('Oturum doğrulanamadı, mock kullanıcı oluşturuluyor...');
-        // Mock fallback if backend DB is not reachable
+        const savedMockUser = localStorage.getItem('anipini_mock_user');
+        if (token === 'mock_jwt_token_pastel' && savedMockUser) {
+          try {
+            setUser(JSON.parse(savedMockUser));
+            return;
+          } catch (parseError) {
+            console.warn('Demo kullanıcı bilgisi okunamadı, yeniden oluşturuluyor:', parseError);
+          }
+        }
         const savedType = localStorage.getItem('anipini_usertype') || 'individual';
-        setUser({
-          id: 1,
+        const mockUser = {
+          id: getMockUserId('damla@anipini.com'),
           fullName: 'Damla Yılmaz',
           email: 'damla@anipini.com',
           userType: savedType,
@@ -37,7 +59,9 @@ export const AuthProvider = ({ children }) => {
             ? 'Mekanımızın anılarını haritada paylaşıyoruz 🏢✨'
             : 'Haritamda tatlı anılar ve geziler biriktiriyorum 🌸✨',
           avatarUrl: 'https://api.dicebear.com/7.x/bottts-neutral/svg?seed=Damla'
-        });
+        };
+        setUser(mockUser);
+        if (token === 'mock_jwt_token_pastel') saveMockUser(mockUser);
       } finally {
         setLoading(false);
       }
@@ -50,6 +74,7 @@ export const AuthProvider = ({ children }) => {
     try {
       const res = await api.post('/auth/login', { email, password });
       if (res.data.success) {
+        localStorage.removeItem('anipini_demo_mode');
         localStorage.setItem('anipini_token', res.data.token);
         localStorage.setItem('anipini_usertype', res.data.user.userType || 'individual');
         setToken(res.data.token);
@@ -60,7 +85,7 @@ export const AuthProvider = ({ children }) => {
       // Mock login for offline prototype preview
       const savedType = localStorage.getItem('anipini_usertype') || 'individual';
       const mockUser = {
-        id: 1,
+        id: getMockUserId(email),
         fullName: email.split('@')[0] || 'Gezgin',
         email,
         userType: savedType,
@@ -73,9 +98,11 @@ export const AuthProvider = ({ children }) => {
         avatarUrl: `https://api.dicebear.com/7.x/bottts-neutral/svg?seed=${email}`
       };
       const mockToken = 'mock_jwt_token_pastel';
+      localStorage.setItem('anipini_demo_mode', 'true');
       localStorage.setItem('anipini_token', mockToken);
       setToken(mockToken);
       setUser(mockUser);
+      saveMockUser(mockUser);
       return { success: true, isMock: true };
     }
   };
@@ -84,6 +111,7 @@ export const AuthProvider = ({ children }) => {
     try {
       const res = await api.post('/auth/register', { fullName, email, password, userType, ...extraData });
       if (res.data.success) {
+        localStorage.removeItem('anipini_demo_mode');
         localStorage.setItem('anipini_token', res.data.token);
         localStorage.setItem('anipini_usertype', res.data.user.userType || userType);
         setToken(res.data.token);
@@ -93,7 +121,7 @@ export const AuthProvider = ({ children }) => {
     } catch (error) {
       // Mock register for offline prototype preview
       const mockUser = {
-        id: Math.floor(Math.random() * 1000) + 2,
+        id: getMockUserId(email),
         fullName,
         email,
         userType,
@@ -106,17 +134,31 @@ export const AuthProvider = ({ children }) => {
         avatarUrl: `https://api.dicebear.com/7.x/bottts-neutral/svg?seed=${encodeURIComponent(fullName)}`
       };
       const mockToken = 'mock_jwt_token_pastel';
+      localStorage.setItem('anipini_demo_mode', 'true');
       localStorage.setItem('anipini_token', mockToken);
       localStorage.setItem('anipini_usertype', userType);
       setToken(mockToken);
       setUser(mockUser);
+      saveMockUser(mockUser);
       return { success: true, isMock: true };
     }
   };
 
   const logoutUser = () => {
+    if (token === 'mock_jwt_token_pastel' && user?.userType === 'corporate') {
+      localStorage.removeItem('anipini_demo_reposts');
+      localStorage.removeItem('anipini_demo_repost_states');
+      localStorage.removeItem(`anipini_reposts_${user.id}`);
+      localStorage.removeItem(`anipini_repost_states_${user.id}`);
+    }
+    if (token === 'mock_jwt_token_pastel' && user?.id) {
+      localStorage.removeItem('anipini_demo_like_states');
+      localStorage.removeItem(`anipini_like_states_${user.id}`);
+    }
     localStorage.removeItem('anipini_token');
     localStorage.removeItem('anipini_usertype');
+    localStorage.removeItem('anipini_mock_user');
+    localStorage.removeItem('anipini_demo_mode');
     setToken(null);
     setUser(null);
   };

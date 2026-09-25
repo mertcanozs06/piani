@@ -5,6 +5,8 @@ import AddPinModal from '../components/Map/AddPinModal';
 import SearchModal from '../components/Search/SearchModal';
 import SponsorshipModal from '../components/Sponsorship/SponsorshipModal';
 import api, { MOCK_PINS, MOCK_CATEGORIES, MOCK_SPONSORED_PINS } from '../services/api';
+import { useAuth } from '../context/AuthContext';
+import { deleteDemoPinForMemory, isDemoMode, readDemoPins, upsertDemoPin } from '../services/demoStorage';
 
 const MapPage = ({
   isAddPinOpen,
@@ -15,6 +17,7 @@ const MapPage = ({
   setIsSponsorshipOpen,
   onViewProfile
 }) => {
+  const { user } = useAuth();
   const [pins, setPins] = useState(MOCK_PINS);
   const [categories, setCategories] = useState(MOCK_CATEGORIES);
   const [sponsoredPins, setSponsoredPins] = useState(MOCK_SPONSORED_PINS);
@@ -24,6 +27,18 @@ const MapPage = ({
   const [flyCoords, setFlyCoords] = useState(null);
 
   const fetchPins = async () => {
+    if (isDemoMode()) {
+      const demoPins = user?.id ? readDemoPins(user.id) : [];
+      const restoredPins = MOCK_PINS.map(pin => {
+        const saved = demoPins.find(item => String(item.id) === String(pin.id));
+        return saved ? { ...pin, ...saved, memories: saved.memories || pin.memories } : pin;
+      });
+      const newDemoPins = demoPins.filter(saved => !MOCK_PINS.some(pin => String(pin.id) === String(saved.id)));
+      const allPins = [...newDemoPins, ...restoredPins];
+      setPins(selectedCategory ? allPins.filter(pin => pin.category?.id === selectedCategory) : allPins);
+      return;
+    }
+
     try {
       const res = await api.get('/pins', {
         params: selectedCategory ? { categoryId: selectedCategory } : {}
@@ -67,11 +82,26 @@ const MapPage = ({
 
   useEffect(() => {
     fetchPins();
-  }, [selectedCategory]);
+  }, [selectedCategory, user?.id]);
 
   const handleMapClickToAdd = (lat, lng) => {
     setClickCoords({ lat, lng });
     setIsAddPinOpen(true);
+  };
+
+  const handleSelectPin = async (pin) => {
+    setSelectedPin(pin);
+    if (isDemoMode()) return;
+    try {
+      const response = await api.get(`/pins/${pin.id}`);
+      if (response.data.success) {
+        setSelectedPin(current => current?.id === pin.id ? response.data.data : current);
+      }
+    } catch (err) {
+      if (err.response?.status !== 404 && err.response?.status !== 401) {
+        console.error('Pin ayrıntıları yüklenemedi:', err);
+      }
+    }
   };
 
   const existingSpot = clickCoords
@@ -115,6 +145,42 @@ const MapPage = ({
   // 1. Yeni Bir Konum ve İlk Anısını Oluşturma
   const handleAddPinSpot = async (pinData) => {
     const category = categories.find(c => c.id === pinData.categoryId) || categories[0];
+    if (isDemoMode()) {
+      const now = Date.now();
+      const newMockPin = {
+        id: now,
+        createdBy: user?.id,
+        spotName: pinData.spotName,
+        spotSubtitle: pinData.spotSubtitle,
+        latitude: pinData.latitude,
+        longitude: pinData.longitude,
+        memoryCount: 1,
+        category,
+        memories: [{
+          id: now + 1,
+          title: pinData.title,
+          subtitle: pinData.subtitle,
+          contentText: pinData.contentText,
+          mediaType: pinData.mediaType,
+          mediaUrl: pinData.mediaUrl,
+          visibility: pinData.visibility || 'public',
+          memoryDate: pinData.memoryDate,
+          createdAt: new Date().toISOString(),
+          user: {
+            id: user?.id,
+            fullName: user?.fullName || 'Demo Kullanıcısı',
+            userType: user?.userType || 'individual',
+            avatarUrl: user?.avatarUrl
+          },
+          likeCount: 0,
+          isLikedByMe: false,
+          comments: []
+        }]
+      };
+      setPins(prev => [newMockPin, ...prev]);
+      if (user?.id) upsertDemoPin(user.id, newMockPin);
+      return;
+    }
 
     try {
       const res = await api.post('/pins', pinData);
@@ -142,7 +208,7 @@ const MapPage = ({
             visibility: pinData.visibility || 'public',
             memoryDate: pinData.memoryDate,
             createdAt: new Date().toISOString(),
-            user: { id: 1, fullName: 'Damla Yılmaz', avatarUrl: 'https://api.dicebear.com/7.x/bottts-neutral/svg?seed=Damla' },
+            user: { id: user?.id || 1, fullName: user?.fullName || 'Damla Yılmaz', userType: user?.userType || 'individual', avatarUrl: user?.avatarUrl || 'https://api.dicebear.com/7.x/bottts-neutral/svg?seed=Damla' },
             likeCount: 0,
             isLikedByMe: false,
             comments: []
@@ -166,6 +232,16 @@ const MapPage = ({
       }
       return p;
     }));
+    if (isDemoMode()) {
+      const pin = pins.find(item => item.id === pinId);
+      if (user?.id && pin) {
+        upsertDemoPin(user.id, {
+          ...pin,
+          memories: [newMemory, ...(pin.memories || [])]
+        });
+      }
+      return;
+    }
 
     if (selectedPin && selectedPin.id === pinId) {
       setSelectedPin(prev => ({
@@ -183,6 +259,16 @@ const MapPage = ({
   const handleDeleteMemory = async (memoryId) => {
     if (!window.confirm('Bu anınız bu pinden silinsin mi? 🌸')) return;
 
+    if (isDemoMode() && user?.id) {
+      const removedPin = deleteDemoPinForMemory(user.id, memoryId);
+      const pinId = removedPin?.id || selectedPin?.id;
+      if (pinId !== undefined) {
+        setPins(prev => prev.filter(pin => String(pin.id) !== String(pinId)));
+      }
+      setSelectedPin(null);
+      return;
+    }
+
     if (selectedPin) {
       const updatedMemories = selectedPin.memories.filter(m => m.id !== memoryId);
       setSelectedPin({ ...selectedPin, memories: updatedMemories });
@@ -197,7 +283,9 @@ const MapPage = ({
 
     try {
       await api.delete(`/pins/memories/${memoryId}`);
-    } catch (err) {}
+    } catch (err) {
+      alert(err.response?.data?.message || 'Anı silinemedi.');
+    }
   };
 
   return (
@@ -207,7 +295,7 @@ const MapPage = ({
         categories={categories}
         selectedCategory={selectedCategory}
         setSelectedCategory={setSelectedCategory}
-        onSelectPin={(pin) => setSelectedPin(pin)}
+        onSelectPin={handleSelectPin}
         onMapClickToAdd={handleMapClickToAdd}
         sponsoredPins={sponsoredPins}
         onOpenSponsorshipModal={() => setIsSponsorshipOpen(true)}

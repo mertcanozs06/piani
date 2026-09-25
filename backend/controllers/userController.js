@@ -112,6 +112,7 @@ const getUserProfile = async (req, res, next) => {
         memoryDate: mem.MemoryDate,
         createdAt: mem.CreatedAt,
         isReposted: true,
+        isRepostedByMe: true,
         author: {
           id: mem.AuthorId,
           fullName: mem.AuthorFullName,

@@ -130,12 +130,63 @@ const getPinDetails = async (req, res, next) => {
       const commentsResult = await pool.request()
         .input('MemoryId', sql.Int, mem.Id)
         .query(`
-          SELECT c.Id, c.CommentText, c.CreatedAt, u.Id as UserId, u.FullName as UserFullName, u.AvatarUrl as UserAvatar
+          SELECT c.Id, c.ParentCommentId, c.CommentText, c.CreatedAt,
+            u.Id as UserId, u.FullName as UserFullName, u.AvatarUrl as UserAvatar
           FROM MemoryComments c
           INNER JOIN Users u ON c.UserId = u.Id
           WHERE c.MemoryId = @MemoryId
           ORDER BY c.CreatedAt ASC
         `);
+
+      const commentRows = commentsResult.recordset;
+      const commentsById = new Map();
+      for (const comment of commentRows) {
+        const likes = await pool.request()
+          .input('CommentId', sql.Int, comment.Id)
+          .query('SELECT COUNT(*) as LikeCount FROM CommentLikes WHERE CommentId = @CommentId');
+        let isLikedByMe = false;
+        if (currentUserId) {
+          const myLike = await pool.request()
+            .input('CommentId', sql.Int, comment.Id)
+            .input('UserId', sql.Int, currentUserId)
+            .query('SELECT 1 FROM CommentLikes WHERE CommentId = @CommentId AND UserId = @UserId');
+          isLikedByMe = myLike.recordset.length > 0;
+        }
+        commentsById.set(comment.Id, {
+          id: comment.Id,
+          parentCommentId: comment.ParentCommentId,
+          commentText: comment.CommentText,
+          createdAt: comment.CreatedAt,
+          likeCount: likes.recordset[0].LikeCount || 0,
+          isLikedByMe,
+          replies: [],
+          user: {
+            id: comment.UserId,
+            fullName: comment.UserFullName,
+            avatarUrl: comment.UserAvatar
+          }
+        });
+      }
+      const topLevelComments = [];
+      for (const comment of commentsById.values()) {
+        if (comment.parentCommentId && commentsById.has(comment.parentCommentId)) {
+          commentsById.get(comment.parentCommentId).replies.push(comment);
+        } else {
+          topLevelComments.push(comment);
+        }
+      }
+
+      const repostCountResult = await pool.request()
+        .input('MemoryId', sql.Int, mem.Id)
+        .query('SELECT COUNT(*) as RepostCount FROM MemoryReposts WHERE MemoryId = @MemoryId');
+      let isRepostedByMe = false;
+      if (currentUserId) {
+        const myRepost = await pool.request()
+          .input('MemoryId', sql.Int, mem.Id)
+          .input('CorporateUserId', sql.Int, currentUserId)
+          .query('SELECT 1 FROM MemoryReposts WHERE MemoryId = @MemoryId AND CorporateUserId = @CorporateUserId');
+        isRepostedByMe = myRepost.recordset.length > 0;
+      }
 
       memories.push({
         id: mem.Id,
@@ -154,16 +205,9 @@ const getPinDetails = async (req, res, next) => {
         },
         likeCount: likesResult.recordset[0].LikeCount || 0,
         isLikedByMe,
-        comments: commentsResult.recordset.map(c => ({
-          id: c.Id,
-          commentText: c.CommentText,
-          createdAt: c.CreatedAt,
-          user: {
-            id: c.UserId,
-            fullName: c.UserFullName,
-            avatarUrl: c.UserAvatar
-          }
-        }))
+        repostCount: repostCountResult.recordset[0].RepostCount || 0,
+        isRepostedByMe,
+        comments: topLevelComments
       });
     }
 
@@ -341,14 +385,20 @@ const toggleLikeMemory = async (req, res, next) => {
         .input('UserId', sql.Int, userId)
         .query('DELETE FROM MemoryLikes WHERE MemoryId = @MemoryId AND UserId = @UserId');
 
-      return res.json({ success: true, isLiked: false, message: 'Beğeni kaldırıldı.' });
+      const count = await pool.request()
+        .input('MemoryId', sql.Int, memoryId)
+        .query('SELECT COUNT(*) as LikeCount FROM MemoryLikes WHERE MemoryId = @MemoryId');
+      return res.json({ success: true, isLiked: false, likeCount: count.recordset[0].LikeCount, message: 'Beğeni kaldırıldı.' });
     } else {
       await pool.request()
         .input('MemoryId', sql.Int, memoryId)
         .input('UserId', sql.Int, userId)
         .query('INSERT INTO MemoryLikes (MemoryId, UserId) VALUES (@MemoryId, @UserId)');
 
-      return res.json({ success: true, isLiked: true, message: 'Anı beğenildi ❤️' });
+      const count = await pool.request()
+        .input('MemoryId', sql.Int, memoryId)
+        .query('SELECT COUNT(*) as LikeCount FROM MemoryLikes WHERE MemoryId = @MemoryId');
+      return res.json({ success: true, isLiked: true, likeCount: count.recordset[0].LikeCount, message: 'Anı beğenildi ❤️' });
     }
   } catch (error) {
     next(error);
@@ -368,6 +418,15 @@ const addComment = async (req, res, next) => {
     }
 
     const pool = getPool();
+    if (parentCommentId) {
+      const parent = await pool.request()
+        .input('ParentCommentId', sql.Int, parentCommentId)
+        .input('MemoryId', sql.Int, memoryId)
+        .query('SELECT 1 FROM MemoryComments WHERE Id = @ParentCommentId AND MemoryId = @MemoryId');
+      if (parent.recordset.length === 0) {
+        return res.status(400).json({ success: false, message: 'Yanıtlanacak yorum bu anıya ait değil.' });
+      }
+    }
 
     const result = await pool.request()
       .input('MemoryId', sql.Int, memoryId)
@@ -415,21 +474,27 @@ const toggleLikeComment = async (req, res, next) => {
         .input('UserId', sql.Int, userId)
         .query('DELETE FROM CommentLikes WHERE CommentId = @CommentId AND UserId = @UserId');
 
-      return res.json({ success: true, isLiked: false, message: 'Yorum beğenisi kaldırıldı.' });
+      const count = await pool.request()
+        .input('CommentId', sql.Int, commentId)
+        .query('SELECT COUNT(*) as LikeCount FROM CommentLikes WHERE CommentId = @CommentId');
+      return res.json({ success: true, isLiked: false, likeCount: count.recordset[0].LikeCount, message: 'Yorum beğenisi kaldırıldı.' });
     } else {
       await pool.request()
         .input('CommentId', sql.Int, commentId)
         .input('UserId', sql.Int, userId)
         .query('INSERT INTO CommentLikes (CommentId, UserId) VALUES (@CommentId, @UserId)');
 
-      return res.json({ success: true, isLiked: true, message: 'Yorum beğenildi ❤️' });
+      const count = await pool.request()
+        .input('CommentId', sql.Int, commentId)
+        .query('SELECT COUNT(*) as LikeCount FROM CommentLikes WHERE CommentId = @CommentId');
+      return res.json({ success: true, isLiked: true, likeCount: count.recordset[0].LikeCount, message: 'Yorum beğenildi ❤️' });
     }
   } catch (error) {
     next(error);
   }
 };
 
-// @desc   Kurumsal Hesap Anıyı Repost (Retweet / Mekanında Paylaş) Et / Kaldır
+// @desc   Kurumsal Hesabın Anıyı Repost Etmesi / Geri Çekmesi
 // @route  POST /api/memories/:id/repost
 const toggleRepostMemory = async (req, res, next) => {
   try {
@@ -437,26 +502,38 @@ const toggleRepostMemory = async (req, res, next) => {
     const corporateUserId = req.user.id;
     const pool = getPool();
 
-    const checkRepost = await pool.request()
+    const result = await pool.request()
       .input('MemoryId', sql.Int, memoryId)
       .input('CorporateUserId', sql.Int, corporateUserId)
-      .query('SELECT * FROM MemoryReposts WHERE MemoryId = @MemoryId AND CorporateUserId = @CorporateUserId');
+      .query(`
+        SET XACT_ABORT ON;
+        BEGIN TRANSACTION;
+        IF EXISTS (
+          SELECT 1 FROM MemoryReposts WITH (UPDLOCK, HOLDLOCK)
+          WHERE MemoryId = @MemoryId AND CorporateUserId = @CorporateUserId
+        )
+        BEGIN
+          DELETE FROM MemoryReposts
+          WHERE MemoryId = @MemoryId AND CorporateUserId = @CorporateUserId;
+          SELECT CAST(0 AS BIT) AS IsReposted;
+        END
+        ELSE
+        BEGIN
+          INSERT INTO MemoryReposts (MemoryId, CorporateUserId)
+          VALUES (@MemoryId, @CorporateUserId);
+          SELECT CAST(1 AS BIT) AS IsReposted;
+        END
+        COMMIT TRANSACTION;
+      `);
 
-    if (checkRepost.recordset.length > 0) {
-      await pool.request()
-        .input('MemoryId', sql.Int, memoryId)
-        .input('CorporateUserId', sql.Int, corporateUserId)
-        .query('DELETE FROM MemoryReposts WHERE MemoryId = @MemoryId AND CorporateUserId = @CorporateUserId');
-
-      return res.json({ success: true, isReposted: false, message: 'Mekan paylaşımı kaldırıldı.' });
-    } else {
-      await pool.request()
-        .input('MemoryId', sql.Int, memoryId)
-        .input('CorporateUserId', sql.Int, corporateUserId)
-        .query('INSERT INTO MemoryReposts (MemoryId, CorporateUserId) VALUES (@MemoryId, @CorporateUserId)');
-
-      return res.json({ success: true, isReposted: true, message: 'Anı mekanınızda paylaşıldı! 🏢🔄' });
-    }
+    const isReposted = Boolean(Number(result.recordset[0].IsReposted));
+    return res.json({
+      success: true,
+      isReposted,
+      message: isReposted
+        ? 'Anı mekanınızda paylaşıldı! 🏢🔄'
+        : 'Anı profilinizden kaldırıldı.'
+    });
   } catch (error) {
     next(error);
   }

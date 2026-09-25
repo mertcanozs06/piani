@@ -2,6 +2,123 @@ import React, { useState } from 'react';
 import { X, Calendar, Share2, Trash2, Heart, MessageCircle, Send, Music, Film, Image as ImageIcon, PlusCircle, Sparkles, Repeat, Building2, Globe, Users, Target, Lock, CornerDownRight, Check, Upload } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import api, { MOCK_FOLLOWERS } from '../../services/api';
+import { isDemoMode, readDemoComments, writeDemoComments } from '../../services/demoStorage';
+
+const updateCommentTree = (comments, commentId, update) => comments.map((comment) => (
+  comment.id === commentId
+    ? update(comment)
+    : { ...comment, replies: updateCommentTree(comment.replies || [], commentId, update) }
+));
+
+const countComments = (comments = []) => comments.reduce(
+  (total, comment) => total + 1 + countComments(comment.replies || []),
+  0
+);
+
+const readLocalReposts = (userId) => {
+  try {
+    const demoReposts = localStorage.getItem('anipini_demo_reposts');
+    return JSON.parse(demoReposts || localStorage.getItem(`anipini_reposts_${userId}`) || '[]');
+  } catch (error) {
+    console.warn('Yerel mekan paylaşımları okunamadı:', error);
+    return [];
+  }
+};
+
+const readLocalRepostStates = (userId) => {
+  try {
+    const demoStates = localStorage.getItem('anipini_demo_repost_states');
+    return JSON.parse(demoStates || localStorage.getItem(`anipini_repost_states_${userId}`) || '{}');
+  } catch (error) {
+    console.warn('Yerel repost durumları okunamadı:', error);
+    return {};
+  }
+};
+
+const readLocalLikeStates = (userId) => {
+  try {
+    const demoStates = localStorage.getItem('anipini_demo_like_states');
+    return JSON.parse(demoStates || localStorage.getItem(`anipini_like_states_${userId}`) || '{}');
+  } catch (error) {
+    console.warn('Yerel beğeni durumları okunamadı:', error);
+    return {};
+  }
+};
+
+const saveLocalLikeState = (userId, memoryId, isLiked, likeCount) => {
+  try {
+    const states = readLocalLikeStates(userId);
+    states[String(memoryId)] = { isLiked, likeCount };
+    localStorage.setItem('anipini_demo_like_states', JSON.stringify(states));
+  } catch (error) {
+    console.warn('Beğeni durumu yerel olarak kaydedilemedi:', error);
+  }
+};
+
+const saveLocalRepostState = (userId, memoryId, isReposted) => {
+  try {
+    const states = readLocalRepostStates(userId);
+    states[String(memoryId)] = isReposted;
+    localStorage.setItem('anipini_demo_repost_states', JSON.stringify(states));
+  } catch (error) {
+    console.warn('Repost durumu yerel olarak kaydedilemedi:', error);
+  }
+};
+
+const saveLocalRepost = (userId, memory, pin, isReposted) => {
+  try {
+    const reposts = readLocalReposts(userId);
+    const updatedReposts = isReposted
+      ? [{
+        ...memory,
+        isReposted: true,
+        isRepostedByMe: true,
+        author: memory.user,
+        pin: {
+          id: pin.id,
+          spotName: pin.spotName,
+          spotSubtitle: pin.spotSubtitle,
+          latitude: pin.latitude,
+          longitude: pin.longitude,
+          category: pin.category
+        }
+      }, ...reposts.filter(item => String(item.id) !== String(memory.id))]
+      : reposts.filter(item => String(item.id) !== String(memory.id));
+    localStorage.setItem('anipini_demo_reposts', JSON.stringify(updatedReposts));
+    saveLocalRepostState(userId, memory.id, isReposted);
+  } catch (error) {
+    console.warn('Repost yerel olarak kaydedilemedi:', error);
+  }
+};
+
+const isMockSession = () => (
+  localStorage.getItem('anipini_demo_mode') === 'true'
+  || localStorage.getItem('anipini_token') === 'mock_jwt_token_pastel'
+);
+
+const isMemoryReposted = (memory, userId) => {
+  if (!isMockSession() && typeof memory.isRepostedByMe === 'boolean') {
+    return memory.isRepostedByMe;
+  }
+  if (!userId) return Boolean(memory.isRepostedByMe);
+  const states = readLocalRepostStates(userId);
+  if (Object.prototype.hasOwnProperty.call(states, String(memory.id))) {
+    return Boolean(states[String(memory.id)]);
+  }
+  return Boolean(memory.isRepostedByMe)
+    || readLocalReposts(userId).some(item => String(item.id) === String(memory.id));
+};
+
+const isMemoryLiked = (memory, userId) => {
+  if (!isMockSession() && typeof memory.isLikedByMe === 'boolean') {
+    return memory.isLikedByMe;
+  }
+  if (!userId) return Boolean(memory.isLikedByMe);
+  const states = readLocalLikeStates(userId);
+  return Object.prototype.hasOwnProperty.call(states, String(memory.id))
+    ? Boolean(states[String(memory.id)].isLiked)
+    : Boolean(memory.isLikedByMe);
+};
 
 const PinDetailModal = ({ pin, onClose, onDeleteMemory, onAddMemoryToPin }) => {
   const { user } = useAuth();
@@ -27,11 +144,40 @@ const PinDetailModal = ({ pin, onClose, onDeleteMemory, onAddMemoryToPin }) => {
 
   // Local memories state
   const [localMemories, setLocalMemories] = useState(pin?.memories || []);
+  const repostingMemoryIds = React.useRef(new Set());
 
   const isCorporate = user?.userType === 'corporate';
 
   React.useEffect(() => {
-    setLocalMemories(pin?.memories || []);
+    const localReposts = isCorporate && user?.id
+      ? readLocalReposts(user.id)
+      : [];
+    const localRepostIds = new Set(localReposts.map(item => String(item.id)));
+    const repostStates = isCorporate && user?.id
+      ? readLocalRepostStates(user.id)
+      : {};
+    const likeStates = user?.id && isMockSession() ? readLocalLikeStates(user.id) : {};
+    const demoComments = user?.id && isDemoMode() ? readDemoComments(user.id) : {};
+    setLocalMemories((pin?.memories || []).map(memory => {
+      const hasServerRepostState = !isMockSession() && typeof memory.isRepostedByMe === 'boolean';
+      const reposted = hasServerRepostState
+        ? memory.isRepostedByMe
+        : Object.prototype.hasOwnProperty.call(repostStates, String(memory.id))
+          ? repostStates[String(memory.id)]
+          : localRepostIds.has(String(memory.id)) || Boolean(memory.isRepostedByMe);
+      const likeState = likeStates[String(memory.id)];
+      return {
+        ...memory,
+        isRepostedByMe: reposted,
+        ...(likeState && isMockSession() ? {
+          isLikedByMe: Boolean(likeState.isLiked),
+          likeCount: Number(likeState.likeCount) || 0
+        } : {}),
+        ...(demoComments[String(memory.id)] ? {
+          comments: demoComments[String(memory.id)]
+        } : {})
+      };
+    }));
     if (pin?.memories) {
       const initialOpenState = {};
       pin.memories.forEach(m => {
@@ -39,7 +185,7 @@ const PinDetailModal = ({ pin, onClose, onDeleteMemory, onAddMemoryToPin }) => {
       });
       setOpenComments(initialOpenState);
     }
-  }, [pin]);
+  }, [pin, isCorporate, user?.id]);
 
   if (!pin) return null;
 
@@ -58,40 +204,112 @@ const PinDetailModal = ({ pin, onClose, onDeleteMemory, onAddMemoryToPin }) => {
 
   // Anı Beğeni Değiştirme (Memory Like Toggle)
   const handleToggleLike = async (memoryId) => {
+    const memory = localMemories.find((item) => item.id === memoryId);
+    const wasLiked = isMemoryLiked(memory || { id: memoryId }, user?.id);
+    const currentCount = Number(readLocalLikeStates(user?.id)[String(memoryId)]?.likeCount ?? memory?.likeCount) || 0;
+    const nextLiked = !wasLiked;
+    const nextCount = Math.max(0, currentCount + (wasLiked ? -1 : 1));
+    if (user?.id) saveLocalLikeState(user.id, memoryId, nextLiked, nextCount);
     setLocalMemories(prev => prev.map(m => {
       if (m.id === memoryId) {
-        const isLiked = m.isLikedByMe;
         return {
           ...m,
-          isLikedByMe: !isLiked,
-          likeCount: isLiked ? (m.likeCount > 0 ? m.likeCount - 1 : 0) : m.likeCount + 1
+          isLikedByMe: nextLiked,
+          likeCount: nextCount
         };
       }
       return m;
     }));
 
+    if (isMockSession()) return;
+
     try {
-      await api.post(`/pins/memories/${memoryId}/like`);
-    } catch (err) {}
+      const response = await api.post(`/pins/memories/${memoryId}/like`);
+      if (response.data.success) {
+        const responseCount = Number(response.data.likeCount) || 0;
+        if (user?.id) saveLocalLikeState(user.id, memoryId, response.data.isLiked, responseCount);
+        setLocalMemories(prev => prev.map(m => m.id === memoryId
+          ? {
+            ...m,
+            isLikedByMe: response.data.isLiked,
+            likeCount: responseCount
+          }
+          : m
+        ));
+      }
+    } catch (err) {
+      if (localStorage.getItem('anipini_token') === 'mock_jwt_token_pastel') {
+        console.warn('Mock modda beğeni yalnızca bu oturumda tutuluyor:', err);
+      } else {
+        if (user?.id) saveLocalLikeState(user.id, memoryId, wasLiked, currentCount);
+        setLocalMemories(prev => prev.map(m => m.id === memoryId
+          ? { ...m, isLikedByMe: wasLiked, likeCount: currentCount }
+          : m
+        ));
+        alert(err.response?.data?.message || 'Beğeni kaydedilemedi.');
+      }
+    }
   };
 
   // Kurumsal Retweet / Repost Değiştirme (Corporate Repost Toggle)
   const handleToggleRepost = async (memoryId) => {
-    setLocalMemories(prev => prev.map(m => {
-      if (m.id === memoryId) {
-        const isReposted = m.isRepostedByMe;
-        return {
-          ...m,
-          isRepostedByMe: !isReposted,
-          repostCount: isReposted ? (m.repostCount > 0 ? m.repostCount - 1 : 0) : (m.repostCount || 0) + 1
-        };
+    const memory = localMemories.find((item) => item.id === memoryId);
+    if (repostingMemoryIds.current.has(String(memoryId))) return;
+
+    const wasReposted = isMemoryReposted(memory || { id: memoryId }, user?.id);
+    const nextRepostState = !wasReposted;
+    repostingMemoryIds.current.add(String(memoryId));
+    if (user?.id && memory) {
+      saveLocalRepost(user.id, memory, pin, nextRepostState);
+    }
+    setLocalMemories(prev => prev.map(item => item.id === memoryId
+      ? {
+        ...item,
+        isRepostedByMe: nextRepostState,
+        repostCount: Math.max(0, (Number(item.repostCount) || 0) + (nextRepostState ? 1 : -1))
       }
-      return m;
-    }));
+      : item
+    ));
+
+    if (isMockSession()) {
+      repostingMemoryIds.current.delete(String(memoryId));
+      return;
+    }
 
     try {
-      await api.post(`/pins/memories/${memoryId}/repost`);
-    } catch (err) {}
+      const response = await api.post(`/pins/memories/${memoryId}/repost`);
+      if (response.data.success) {
+        const isReposted = response.data.isReposted === true
+          || response.data.isReposted === 1
+          || response.data.isReposted === '1';
+        if (user?.id && memory) saveLocalRepost(user.id, memory, pin, isReposted);
+        setLocalMemories(prev => prev.map(item => item.id === memoryId
+          ? {
+            ...item,
+            isRepostedByMe: isReposted,
+            repostCount: Math.max(0, (Number(item.repostCount) || 0) + (isReposted === nextRepostState ? 0 : isReposted ? 1 : -1))
+          }
+          : item
+        ));
+      }
+    } catch (err) {
+      if (localStorage.getItem('anipini_token') === 'mock_jwt_token_pastel') {
+        console.warn('Mock modda mekan paylaşımı yerel olarak güncellendi:', err);
+      } else {
+        if (user?.id && memory) saveLocalRepost(user.id, memory, pin, wasReposted);
+        setLocalMemories(prev => prev.map(item => item.id === memoryId
+          ? {
+            ...item,
+            isRepostedByMe: wasReposted,
+            repostCount: Math.max(0, (Number(item.repostCount) || 0) + (wasReposted ? 1 : -1))
+          }
+          : item
+        ));
+        alert(err.response?.data?.message || 'Mekan paylaşımı kaydedilemedi.');
+      }
+    } finally {
+      repostingMemoryIds.current.delete(String(memoryId));
+    }
   };
 
   // Ana Yorum Gönderme
@@ -109,47 +327,117 @@ const PinDetailModal = ({ pin, onClose, onDeleteMemory, onAddMemoryToPin }) => {
       user: {
         id: user?.id || 1,
         fullName: user?.fullName || 'Anonim Gezgin',
+        userType: user?.userType || 'individual',
         avatarUrl: user?.avatarUrl || 'https://api.dicebear.com/7.x/bottts-neutral/svg?seed=Me'
       }
     };
 
+    const currentComments = localMemories.find(memory => memory.id === memoryId)?.comments || [];
+    const updatedComments = [...currentComments, newCommentObj];
+    if (user?.id && isDemoMode()) writeDemoComments(user.id, memoryId, updatedComments);
     setLocalMemories(prev => prev.map(m => {
       if (m.id === memoryId) {
-        return { ...m, comments: [...(m.comments || []), newCommentObj] };
-      }
-      return m;
-    }));
-
-    setCommentInputs(prev => ({ ...prev, [memoryId]: '' }));
-
-    try {
-      await api.post(`/pins/memories/${memoryId}/comments`, { commentText: text.trim() });
-    } catch (err) {}
-  };
-
-  // Yorum Beğeni Değiştirme (Comment Like Toggle)
-  const handleToggleCommentLike = async (memoryId, commentId) => {
-    setLocalMemories(prev => prev.map(m => {
-      if (m.id === memoryId) {
-        const updatedComments = (m.comments || []).map(c => {
-          if (c.id === commentId) {
-            const isLiked = c.isLikedByMe;
-            return {
-              ...c,
-              isLikedByMe: !isLiked,
-              likeCount: isLiked ? (c.likeCount > 0 ? c.likeCount - 1 : 0) : (c.likeCount || 0) + 1
-            };
-          }
-          return c;
-        });
         return { ...m, comments: updatedComments };
       }
       return m;
     }));
 
+    setCommentInputs(prev => ({ ...prev, [memoryId]: '' }));
+    if (isDemoMode()) return;
+
     try {
-      await api.post(`/pins/memories/comments/${commentId}/like`);
-    } catch (err) {}
+      const response = await api.post(`/pins/memories/${memoryId}/comments`, { commentText: text.trim() });
+      if (response.data.success) {
+        setLocalMemories(prev => prev.map(m => m.id === memoryId
+          ? {
+            ...m,
+            comments: (m.comments || []).map(comment => comment.id === newCommentObj.id
+              ? { ...comment, ...response.data.data }
+              : comment)
+          }
+          : m
+        ));
+      }
+    } catch (err) {
+      if (localStorage.getItem('anipini_token') !== 'mock_jwt_token_pastel') {
+        setLocalMemories(prev => prev.map(m => m.id === memoryId
+          ? { ...m, comments: (m.comments || []).filter(comment => comment.id !== newCommentObj.id) }
+          : m
+        ));
+        alert(err.response?.data?.message || 'Yorum gönderilemedi.');
+      } else {
+        console.warn('Mock modda yorum yalnızca bu oturumda tutuluyor:', err);
+      }
+    }
+  };
+
+  // Yorum Beğeni Değiştirme (Comment Like Toggle)
+  const handleToggleCommentLike = async (memoryId, commentId) => {
+    const memory = localMemories.find((item) => item.id === memoryId);
+    let originalComment = null;
+    const findComment = (comments = []) => {
+      for (const comment of comments) {
+        if (comment.id === commentId) return comment;
+        const nested = findComment(comment.replies || []);
+        if (nested) return nested;
+      }
+      return null;
+    };
+    originalComment = findComment(memory?.comments);
+    const wasLiked = Boolean(originalComment?.isLikedByMe);
+    const currentCount = Number(originalComment?.likeCount) || 0;
+    const updatedComments = updateCommentTree(
+      memory?.comments || [],
+      commentId,
+      comment => ({
+        ...comment,
+        isLikedByMe: !wasLiked,
+        likeCount: Math.max(0, currentCount + (wasLiked ? -1 : 1))
+      })
+    );
+    if (user?.id && isDemoMode()) writeDemoComments(user.id, memoryId, updatedComments);
+    setLocalMemories(prev => prev.map(m => {
+      if (m.id === memoryId) {
+        return { ...m, comments: updatedComments };
+      }
+      return m;
+    }));
+
+    if (isDemoMode()) return;
+
+    try {
+      const response = await api.post(`/pins/memories/comments/${commentId}/like`);
+      if (response.data.success) {
+        setLocalMemories(prev => prev.map(m => m.id === memoryId
+          ? {
+            ...m,
+            comments: updateCommentTree(m.comments || [], commentId, comment => ({
+              ...comment,
+              isLikedByMe: response.data.isLiked,
+              likeCount: Number(response.data.likeCount) || 0
+            }))
+          }
+          : m
+        ));
+      }
+    } catch (err) {
+      if (localStorage.getItem('anipini_token') === 'mock_jwt_token_pastel') {
+        console.warn('Mock modda yorum beğenisi yalnızca bu oturumda tutuluyor:', err);
+      } else {
+        setLocalMemories(prev => prev.map(m => m.id === memoryId
+          ? {
+            ...m,
+            comments: updateCommentTree(m.comments || [], commentId, comment => ({
+              ...comment,
+              isLikedByMe: wasLiked,
+              likeCount: currentCount
+            }))
+          }
+          : m
+        ));
+        alert(err.response?.data?.message || 'Yorum beğenisi kaydedilemedi.');
+      }
+    }
   };
 
   // Yorum Yanıtlama (Alt Yorum Gönderme)
@@ -167,18 +455,19 @@ const PinDetailModal = ({ pin, onClose, onDeleteMemory, onAddMemoryToPin }) => {
       user: {
         id: user?.id || 1,
         fullName: user?.fullName || 'Anonim Gezgin',
+        userType: user?.userType || 'individual',
         avatarUrl: user?.avatarUrl || 'https://api.dicebear.com/7.x/bottts-neutral/svg?seed=Me'
       }
     };
 
+    const currentComments = localMemories.find(memory => memory.id === memoryId)?.comments || [];
+    const updatedComments = updateCommentTree(currentComments, parentCommentId, comment => ({
+      ...comment,
+      replies: [...(comment.replies || []), newReplyObj]
+    }));
+    if (user?.id && isDemoMode()) writeDemoComments(user.id, memoryId, updatedComments);
     setLocalMemories(prev => prev.map(m => {
       if (m.id === memoryId) {
-        const updatedComments = (m.comments || []).map(c => {
-          if (c.id === parentCommentId) {
-            return { ...c, replies: [...(c.replies || []), newReplyObj] };
-          }
-          return c;
-        });
         return { ...m, comments: updatedComments };
       }
       return m;
@@ -186,10 +475,44 @@ const PinDetailModal = ({ pin, onClose, onDeleteMemory, onAddMemoryToPin }) => {
 
     setReplyInputs(prev => ({ ...prev, [parentCommentId]: '' }));
     setReplyingCommentId(null);
+    if (isDemoMode()) return;
 
     try {
-      await api.post(`/pins/memories/${memoryId}/comments`, { commentText: text.trim(), parentCommentId });
-    } catch (err) {}
+      const response = await api.post(`/pins/memories/${memoryId}/comments`, {
+        commentText: text.trim(),
+        parentCommentId
+      });
+      if (response.data.success) {
+        setLocalMemories(prev => prev.map(m => m.id === memoryId
+          ? {
+            ...m,
+            comments: updateCommentTree(m.comments || [], newReplyObj.parentCommentId, comment => ({
+              ...comment,
+              replies: (comment.replies || []).map(reply => reply.id === newReplyObj.id
+                ? { ...reply, ...response.data.data }
+                : reply)
+            }))
+          }
+          : m
+        ));
+      }
+    } catch (err) {
+      if (localStorage.getItem('anipini_token') !== 'mock_jwt_token_pastel') {
+        setLocalMemories(prev => prev.map(m => m.id === memoryId
+          ? {
+            ...m,
+            comments: updateCommentTree(m.comments || [], parentCommentId, comment => ({
+              ...comment,
+              replies: (comment.replies || []).filter(reply => reply.id !== newReplyObj.id)
+            }))
+          }
+          : m
+        ));
+        alert(err.response?.data?.message || 'Yanıt gönderilemedi.');
+      } else {
+        console.warn('Mock modda yanıt yalnızca bu oturumda tutuluyor:', err);
+      }
+    }
   };
 
   // Takipçi Seçici Toggle
@@ -228,6 +551,7 @@ const PinDetailModal = ({ pin, onClose, onDeleteMemory, onAddMemoryToPin }) => {
       user: {
         id: user?.id || 1,
         fullName: user?.fullName || 'Anonim Gezgin',
+        userType: user?.userType || 'individual',
         avatarUrl: user?.avatarUrl || 'https://api.dicebear.com/7.x/bottts-neutral/svg?seed=Me'
       },
       likeCount: 0,
@@ -257,6 +581,75 @@ const PinDetailModal = ({ pin, onClose, onDeleteMemory, onAddMemoryToPin }) => {
       alert(`"${pin.spotName}" konumu kopyalandı! 🌸`);
     }
   };
+
+  const renderComment = (comment, depth = 0, memoryId) => (
+    <div
+      key={comment.id}
+      className={`space-y-1.5 ${depth ? 'ml-4 border-l-2 border-pastel-rose/30 pl-3' : ''}`}
+    >
+      <div className="bg-white p-3 rounded-2xl border border-pastel-rose/20 text-xs space-y-1 shadow-2xs">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center space-x-2">
+            <img
+              src={comment.user?.avatarUrl || 'https://api.dicebear.com/7.x/bottts-neutral/svg?seed=User'}
+              alt="user"
+              className="w-5 h-5 rounded-full"
+            />
+            <span className="font-bold text-pastel-dark">{comment.user?.fullName}</span>
+          </div>
+          <button
+            onClick={() => handleToggleCommentLike(memoryId, comment.id)}
+            className={`flex items-center space-x-1 px-2 py-0.5 rounded-full text-[10px] ${
+              comment.isLikedByMe ? 'bg-red-50 text-red-600 font-bold' : 'text-pastel-gray hover:text-pastel-dark'
+            }`}
+          >
+            <Heart className={`w-3 h-3 ${comment.isLikedByMe ? 'fill-red-500 text-red-500' : ''}`} />
+            <span>{Number(comment.likeCount) || 0}</span>
+          </button>
+        </div>
+        <p className="text-pastel-charcoal pl-7 whitespace-normal break-words [overflow-wrap:anywhere]">{comment.commentText}</p>
+        <div className="pl-7 pt-1 flex items-center space-x-3 text-[10px] text-pastel-gray">
+          <button
+            onClick={() => setReplyingCommentId(replyingCommentId === comment.id ? null : comment.id)}
+            className="font-bold text-pastel-skyHover hover:underline flex items-center space-x-1"
+          >
+            <CornerDownRight className="w-3 h-3" />
+            <span>Yanıtla</span>
+          </button>
+        </div>
+      </div>
+
+      {replyingCommentId === comment.id && (
+        <div className="pl-3 flex items-center space-x-2 pt-1">
+          <textarea
+            rows={2}
+            placeholder={`${comment.user?.fullName || 'Kullanıcı'} kişisine yanıt ver...`}
+            value={replyInputs[comment.id] || ''}
+            onChange={(e) => setReplyInputs(prev => ({ ...prev, [comment.id]: e.target.value }))}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                handleAddReply(memoryId, comment.id);
+              }
+            }}
+            className="flex-1 min-w-0 px-3 py-1.5 rounded-xl bg-white border border-pastel-sky/50 text-xs focus:outline-none focus:ring-1 focus:ring-pastel-sky resize-y whitespace-pre-wrap break-words"
+          />
+          <button
+            onClick={() => handleAddReply(memoryId, comment.id)}
+            className="px-2.5 py-1.5 rounded-xl bg-pastel-sky text-pastel-dark font-bold hover:bg-pastel-skyHover shadow-xs text-xs"
+          >
+            Yanıtla
+          </button>
+        </div>
+      )}
+
+      {comment.replies?.length > 0 && (
+        <div className="space-y-1.5">
+          {comment.replies.map(reply => renderComment(reply, depth + 1, memoryId))}
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <div className="fixed inset-0 z-[9999] flex items-end sm:items-center justify-center p-0 sm:p-4 bg-pastel-dark/60 backdrop-blur-md animate-fadeIn overflow-y-auto">
@@ -328,6 +721,8 @@ const PinDetailModal = ({ pin, onClose, onDeleteMemory, onAddMemoryToPin }) => {
                 localMemories.map((mem) => {
                   const isMyMemory = user && mem.user && user.id === mem.user.id;
                   const showCommentBox = openComments[mem.id] !== false;
+                  const isReposted = isCorporate && isMemoryReposted(mem, user?.id);
+                  const isLiked = isMemoryLiked(mem, user?.id);
 
                   return (
                     <div key={mem.id} className="bg-pastel-bg/80 rounded-3xl p-4 sm:p-5 border border-pastel-rose/30 shadow-xs space-y-3">
@@ -404,13 +799,13 @@ const PinDetailModal = ({ pin, onClose, onDeleteMemory, onAddMemoryToPin }) => {
                           <button
                             onClick={() => handleToggleLike(mem.id)}
                             className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-full transition-all active:scale-90 shadow-xs ${
-                              mem.isLikedByMe
+                              isLiked
                                 ? 'bg-pastel-rose text-pastel-dark font-bold'
                                 : 'bg-white text-pastel-gray hover:text-pastel-dark'
                             }`}
                           >
-                            <Heart className={`w-4 h-4 ${mem.isLikedByMe ? 'fill-red-500 text-red-500' : ''}`} />
-                            <span>{mem.likeCount || 0} Beğeni</span>
+                            <Heart className={`w-4 h-4 ${isLiked ? 'fill-red-500 text-red-500' : ''}`} />
+                            <span>{Number(mem.likeCount) || 0} Beğeni</span>
                           </button>
 
                           {/* Yorumlar Aç/Kapa Butonu */}
@@ -419,7 +814,7 @@ const PinDetailModal = ({ pin, onClose, onDeleteMemory, onAddMemoryToPin }) => {
                             className="flex items-center space-x-1.5 px-3 py-1.5 rounded-full bg-white text-pastel-gray hover:text-pastel-dark shadow-xs transition-all"
                           >
                             <MessageCircle className="w-4 h-4 text-pastel-skyHover" />
-                            <span>{mem.comments ? mem.comments.length : 0} Yorum</span>
+                            <span>{countComments(mem.comments)} Yorum</span>
                           </button>
                         </div>
 
@@ -427,110 +822,44 @@ const PinDetailModal = ({ pin, onClose, onDeleteMemory, onAddMemoryToPin }) => {
                         {isCorporate && (
                           <button
                             onClick={() => handleToggleRepost(mem.id)}
+                            disabled={repostingMemoryIds.current.has(String(mem.id))}
                             className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-full text-xs font-bold transition-all shadow-xs ${
-                              mem.isRepostedByMe
+                              isReposted
                                 ? 'bg-purple-600 text-white shadow-purple-200'
                                 : 'bg-purple-50 text-purple-700 hover:bg-purple-100 border border-purple-200'
                             }`}
                           >
                             <Repeat className="w-3.5 h-3.5" />
-                            <span>{mem.isRepostedByMe ? 'Mekanında Paylaşıldı 🔄' : 'Mekanında Paylaş (Retweet)'}</span>
+                            <span>{isReposted ? 'Mekanında Paylaşıldı 🔄' : 'Mekanında Paylaş (Retweet)'}</span>
                           </button>
                         )}
                       </div>
 
                       {/* YORUMLAR ALANI */}
                       {showCommentBox && (
-                        <div className="pt-2 space-y-3 border-t border-pastel-rose/20">
+                        <div className="pt-2 flex flex-col border-t border-pastel-rose/20">
                           <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
                             {mem.comments && mem.comments.length > 0 ? (
-                              mem.comments.map(c => (
-                                <div key={c.id} className="space-y-1.5">
-                                  {/* Ana Yorum Kartı */}
-                                  <div className="bg-white p-3 rounded-2xl border border-pastel-rose/20 text-xs space-y-1 shadow-2xs">
-                                    <div className="flex items-center justify-between">
-                                      <div className="flex items-center space-x-2">
-                                        <img src={c.user?.avatarUrl || 'https://api.dicebear.com/7.x/bottts-neutral/svg?seed=User'} alt="user" className="w-5 h-5 rounded-full" />
-                                        <span className="font-bold text-pastel-dark">{c.user?.fullName}</span>
-                                      </div>
-
-                                      {/* Yorum Beğeni Kalbi */}
-                                      <button
-                                        onClick={() => handleToggleCommentLike(mem.id, c.id)}
-                                        className={`flex items-center space-x-1 px-2 py-0.5 rounded-full text-[10px] ${
-                                          c.isLikedByMe ? 'bg-red-50 text-red-600 font-bold' : 'text-pastel-gray hover:text-pastel-dark'
-                                        }`}
-                                      >
-                                        <Heart className={`w-3 h-3 ${c.isLikedByMe ? 'fill-red-500 text-red-500' : ''}`} />
-                                        <span>{c.likeCount || 0}</span>
-                                      </button>
-                                    </div>
-
-                                    <p className="text-pastel-charcoal pl-7">{c.commentText}</p>
-
-                                    {/* Yorum Alt Butonları (Yanıtla) */}
-                                    <div className="pl-7 pt-1 flex items-center space-x-3 text-[10px] text-pastel-gray">
-                                      <button
-                                        onClick={() => setReplyingCommentId(replyingCommentId === c.id ? null : c.id)}
-                                        className="font-bold text-pastel-skyHover hover:underline flex items-center space-x-1"
-                                      >
-                                        <CornerDownRight className="w-3 h-3" />
-                                        <span>Yanıtla</span>
-                                      </button>
-                                    </div>
-                                  </div>
-
-                                  {/* İÇ İÇE ALT YORUMLAR (REPLIES) */}
-                                  {c.replies && c.replies.length > 0 && (
-                                    <div className="pl-6 space-y-1.5 border-l-2 border-pastel-rose/30 ml-3">
-                                      {c.replies.map(r => (
-                                        <div key={r.id} className="bg-pastel-bg/90 p-2.5 rounded-2xl border border-pastel-rose/20 text-[11px] space-y-0.5">
-                                          <div className="flex items-center space-x-1.5">
-                                            <img src={r.user?.avatarUrl || 'https://api.dicebear.com/7.x/bottts-neutral/svg?seed=Sub'} alt="user" className="w-4 h-4 rounded-full" />
-                                            <span className="font-bold text-pastel-dark">{r.user?.fullName}</span>
-                                          </div>
-                                          <p className="text-pastel-charcoal pl-5.5">{r.commentText}</p>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  )}
-
-                                  {/* ALT YORUM YAZMA KUTUSU */}
-                                  {replyingCommentId === c.id && (
-                                    <div className="pl-6 flex items-center space-x-2 pt-1">
-                                      <input
-                                        type="text"
-                                        placeholder={`${c.user?.fullName} kişisine yanıt ver...`}
-                                        value={replyInputs[c.id] || ''}
-                                        onChange={(e) => setReplyInputs({ ...replyInputs, [c.id]: e.target.value })}
-                                        onKeyDown={(e) => e.key === 'Enter' && handleAddReply(mem.id, c.id)}
-                                        className="flex-1 px-3 py-1.5 rounded-xl bg-white border border-pastel-sky/50 text-xs focus:outline-none focus:ring-1 focus:ring-pastel-sky"
-                                      />
-                                      <button
-                                        onClick={() => handleAddReply(mem.id, c.id)}
-                                        className="px-2.5 py-1.5 rounded-xl bg-pastel-sky text-pastel-dark font-bold hover:bg-pastel-skyHover shadow-xs text-xs"
-                                      >
-                                        Yanıtla
-                                      </button>
-                                    </div>
-                                  )}
-
-                                </div>
-                              ))
+                              mem.comments.map(comment => renderComment(comment, 0, mem.id))
                             ) : (
                               <p className="text-[11px] text-pastel-gray italic pl-1">Henüz yorum yok. İlk yorumu sen yaz!</p>
                             )}
                           </div>
 
                           {/* Ana Yorum Ekleme Girdisi */}
-                          <div className="flex items-center space-x-2 pt-1">
-                            <input
-                              type="text"
+                          <div className="sticky bottom-0 flex items-center space-x-2 pt-2 pb-1 bg-pastel-bg">
+                            <textarea
+                              rows={2}
                               placeholder="Harika bir anı! Yorumunu yaz..."
                               value={commentInputs[mem.id] || ''}
                               onChange={(e) => setCommentInputs({ ...commentInputs, [mem.id]: e.target.value })}
-                              onKeyDown={(e) => e.key === 'Enter' && handleAddComment(mem.id)}
-                              className="flex-1 px-3.5 py-2 rounded-2xl bg-white border border-pastel-rose/40 text-xs focus:outline-none focus:ring-2 focus:ring-pastel-rose"
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' && !e.shiftKey) {
+                                  e.preventDefault();
+                                  handleAddComment(mem.id);
+                                }
+                              }}
+                              className="flex-1 min-w-0 px-3.5 py-2 rounded-2xl bg-white border border-pastel-rose/40 text-xs focus:outline-none focus:ring-2 focus:ring-pastel-rose resize-y whitespace-pre-wrap break-words"
                             />
                             <button
                               onClick={() => handleAddComment(mem.id)}

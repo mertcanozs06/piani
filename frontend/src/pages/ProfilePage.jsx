@@ -5,6 +5,26 @@ import PinDetailModal from '../components/Map/PinDetailModal';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
 import { Repeat, Sparkles, MapPin, Lock, UserCheck, Clock } from 'lucide-react';
+import { deleteDemoPinForMemory, isDemoMode, readDemoPins } from '../services/demoStorage';
+
+const getLocalReposts = (userId) => {
+  try {
+    const saved = JSON.parse(
+      localStorage.getItem('anipini_demo_reposts')
+      || localStorage.getItem(`anipini_reposts_${userId}`)
+      || '[]'
+    );
+    return Array.isArray(saved) ? saved : [];
+  } catch (error) {
+    console.warn('Yerel mekan paylaşımları okunamadı:', error);
+    return [];
+  }
+};
+
+const isMockSession = () => (
+  localStorage.getItem('anipini_demo_mode') === 'true'
+  || localStorage.getItem('anipini_token') === 'mock_jwt_token_pastel'
+);
 
 const ProfilePage = ({ viewedUser, onBackToMyProfile }) => {
   const { user, setUser } = useAuth();
@@ -33,6 +53,26 @@ const ProfilePage = ({ viewedUser, onBackToMyProfile }) => {
   const isMemoriesLocked = isViewingOther && isPrivateAccount && followStatus !== 'accepted';
 
   const fetchProfile = async () => {
+    if (!isViewingOther && isDemoMode()) {
+      const savedPins = readDemoPins(targetUser?.id);
+      const ownMemories = savedPins.flatMap(pin => (pin.memories || [])
+        .filter(memory => String(memory.user?.id) === String(targetUser?.id))
+        .map(memory => ({
+          ...memory,
+          pin: {
+            id: pin.id,
+            spotName: pin.spotName,
+            spotSubtitle: pin.spotSubtitle,
+            latitude: pin.latitude,
+            longitude: pin.longitude,
+            category: pin.category
+          }
+        })));
+      setUserPins(ownMemories);
+      setRepostedPins(isCorporate ? getLocalReposts(targetUser?.id) : []);
+      return;
+    }
+
     if (isViewingOther) {
       try {
         const res = await api.get(`/users/${targetUser.id}/profile`);
@@ -51,7 +91,13 @@ const ProfilePage = ({ viewedUser, onBackToMyProfile }) => {
         const res = await api.get('/users/profile');
         if (res.data.success) {
           setUserPins(res.data.data.memories || res.data.data.pins || []);
-          setRepostedPins(res.data.data.repostedMemories || []);
+          const serverReposts = res.data.data.repostedMemories || [];
+          const localReposts = isCorporate ? getLocalReposts(targetUser.id) : [];
+          const serverRepostIds = new Set(serverReposts.map(pin => pin.id));
+          setRepostedPins([
+            ...serverReposts,
+            ...localReposts.filter(pin => !serverRepostIds.has(pin.id))
+          ]);
           if (res.data.data.stats) {
             setProfileStats(res.data.data.stats);
           }
@@ -59,7 +105,7 @@ const ProfilePage = ({ viewedUser, onBackToMyProfile }) => {
       } catch (err) {
         // Backend bağlantısı yoksa veya kullanıcı anı eklememişse boş liste olarak kalmalı
         setUserPins([]);
-        setRepostedPins([]);
+        setRepostedPins(isCorporate ? getLocalReposts(targetUser?.id) : []);
       }
     }
   };
@@ -99,12 +145,26 @@ const ProfilePage = ({ viewedUser, onBackToMyProfile }) => {
     setUser(prev => ({ ...prev, bio: newBio }));
   };
 
-  const handleDeletePin = async (pinId) => {
+  const handleDeletePin = async (memoryId) => {
     if (!window.confirm('Bu anı silinecektir, emin misiniz? 🌸')) return;
+    if (isDemoMode() && user?.id) {
+      const removedPin = deleteDemoPinForMemory(user.id, memoryId);
+      if (removedPin) {
+        setUserPins(prev => prev.filter(memory => String(memory.pin?.id) !== String(removedPin.id)));
+      } else {
+        setUserPins(prev => prev.filter(memory => String(memory.id) !== String(memoryId)));
+      }
+      setSelectedPin(null);
+      return;
+    }
+
     try {
-      await api.delete(`/pins/${pinId}`);
-    } catch (err) {}
-    setUserPins(prev => prev.filter(p => p.id !== pinId));
+      await api.delete(`/pins/memories/${memoryId}`);
+      setUserPins(prev => prev.filter(memory => String(memory.id) !== String(memoryId)));
+    } catch (err) {
+      alert(err.response?.data?.message || 'Anı silinemedi.');
+      return;
+    }
     setSelectedPin(null);
   };
 
